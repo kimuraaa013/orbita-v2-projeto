@@ -61,7 +61,6 @@ export async function handler(event) {
   const source = typeof visit.source === "string" && /^(direct|[a-z0-9.-]{1,253})$/i.test(visit.source)
     ? visit.source
     : "unknown";
-  const eventType = visit.eventType === "interest" ? "interest" : "visit";
 
   const countryHeader = headers["cloudfront-viewer-country"] ?? "";
   const regionHeader = headers["cloudfront-viewer-country-region"] ?? "";
@@ -81,7 +80,6 @@ export async function handler(event) {
         visitedAtLocal: formatVisitTime(now, country, timeZone),
         timeZone,
         source,
-        eventType,
         country,
         region,
         expiresAt,

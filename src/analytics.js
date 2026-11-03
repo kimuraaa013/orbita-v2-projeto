@@ -36,7 +36,7 @@ export async function sendInterest(endpoint, referrer = "", eventId = crypto.ran
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ eventId, source, eventType: "interest" }),
+      body: JSON.stringify({ eventId, source}),
       credentials: "omit",
       cache: "no-store",
       keepalive: true,

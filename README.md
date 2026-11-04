@@ -4,6 +4,18 @@ A **Órbita** é uma marca fictícia criada para um TCC: uma futura base para ap
 
 Este README documenta a implantação feita **manualmente pelo Console de Gerenciamento da AWS**, serviço por serviço. O repositório contém o frontend e o código de referência da Lambda; a infraestrutura foi configurada no console, sem Terraform ou CloudFormation. As telas da AWS podem mudar de nome ou posição.
 
+## Sumário
+
+- [Arquitetura atual](#arquitetura-atual)
+- [Por que foram escolhidos serviços gerenciados](#por-que-foram-escolhidos-serviços-gerenciados)
+- [Passo a passo da implantação pelo Console AWS](#passo-a-passo-da-implantação-pelo-console-aws)
+- [Por que o cabeçalho personalizado e a variável da Lambda](#por-que-o-cabeçalho-personalizado-e-a-variável-da-lambda)
+- [O que o frontend e a Lambda registram](#o-que-o-frontend-e-a-lambda-registram)
+- [Testes de segurança feitos até aqui](#testes-de-segurança-feitos-até-aqui)
+- [Executar, atualizar e verificar](#executar-atualizar-e-verificar)
+- [Arquivos principais](#arquivos-principais)
+- [Referências oficiais](#referências-oficiais)
+
 ## Arquitetura atual
 
 ```mermaid

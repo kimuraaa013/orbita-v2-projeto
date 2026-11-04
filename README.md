@@ -6,7 +6,33 @@ Este README documenta a implantação feita **manualmente pelo Console de Gerenc
 
 ## Arquitetura atual
 
-![Diagrama da arquitetura atual da Órbita: navegador ou terminal, WAF, CloudFront, S3, API Gateway, Lambda, DynamoDB e CloudWatch Logs](docs/arquitetura-orbita.svg)
+```mermaid
+flowchart LR
+    navegador["Navegador<br/>site Órbita"] -->|"GET e POST no mesmo domínio"| waf["AWS WAF<br/>CloudFront global · us-east-1"]
+    terminal["Terminal"] -->|"URL do CloudFront"| waf
+    waf --> cloudfront["CloudFront<br/>HTTPS e comportamentos"]
+    cloudfront -->|"Comportamento padrão · OAC"| s3["S3 privado<br/>HTML, CSS, JS · us-east-2"]
+    cloudfront -->|"/api/* · POST<br/>X-Origin-Verify"| api["API Gateway HTTP API<br/>POST /api/visits · us-east-2"]
+    api --> lambda["Lambda<br/>Valida requisição · us-east-2"]
+    lambda --> segredo{"Segredo confere?"}
+    segredo -->|"Sim"| dynamo["DynamoDB<br/>Grava interesse · us-east-2"]
+    segredo -->|"Não"| negado["HTTP 403<br/>Não grava"]
+    waf -.->|"Logs do WAF"| logsWaf["CloudWatch Logs<br/>us-east-1"]
+    lambda -.->|"Logs da função"| logsLambda["CloudWatch Logs<br/>us-east-2"]
+    terminal -.->|"execute-api direto<br/>sem CORS"| api
+    navegador -.->|"execute-api direto"| cors{"Preflight CORS<br/>permite?"}
+    cors -->|"Não"| semPost["Navegador não envia POST"]
+    cors -.->|"Sim, sem o segredo"| api
+
+    classDef principal fill:#073b66,stroke:#539ad1,color:#fff
+    classDef decisao fill:#092a45,stroke:#539ad1,color:#fff
+    classDef resultado fill:#123248,stroke:#539ad1,color:#fff
+    class navegador,terminal,waf,cloudfront,s3,api,lambda,dynamo,logsWaf,logsLambda principal
+    class segredo,cors decisao
+    class negado,semPost resultado
+```
+
+[Abrir o diagrama SVG detalhado em tamanho completo](docs/arquitetura-orbita.svg).
 
 **Entrega do site.** O navegador solicita `https://d1yntwcak9q8lo.cloudfront.net/`. O AWS WAF associado à distribuição inspeciona a solicitação. O CloudFront entrega o conteúdo que está em cache ou busca `index.html`, CSS, JavaScript, imagens e `config.json` no bucket privado do S3. O Origin Access Control (OAC) autoriza o CloudFront a ler os objetos sem tornar o bucket público. O certificado TLS do domínio `cloudfront.net` protege a conexão HTTPS com o visitante.
 

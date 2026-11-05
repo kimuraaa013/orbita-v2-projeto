@@ -2,13 +2,14 @@
 
 A **Órbita** é uma marca fictícia criada para um TCC: uma futura base para apresentar portfólios, projetos e processos criativos. A página de lançamento usa React, Vite e Three.js para construir um universo com planeta, órbitas e satélites. O site é entregue como arquivos estáticos; a parte dinâmica registra o interesse de quem clica no botão **Registrar interesse**. Não há cadastro de pessoas nem data de lançamento anunciada.
 
-Este README documenta a implantação feita **manualmente pelo Console de Gerenciamento da AWS**, serviço por serviço. O repositório contém o frontend e o código de referência da Lambda; a infraestrutura foi configurada no console, sem Terraform ou CloudFormation. As telas da AWS podem mudar de nome ou posição.
+Este README documenta a implantação inicial feita **manualmente pelo Console de Gerenciamento da AWS**, serviço por serviço, e a publicação posterior do código pelo GitHub Actions. A infraestrutura foi configurada no console, sem Terraform ou CloudFormation. As telas da AWS podem mudar de nome ou posição.
 
 ## Sumário
 
 - [Arquitetura atual](#arquitetura-atual)
 - [Por que foram escolhidos serviços gerenciados](#por-que-foram-escolhidos-serviços-gerenciados)
 - [Passo a passo da implantação pelo Console AWS](#passo-a-passo-da-implantação-pelo-console-aws)
+- [Passo adicional: publicação automática pelo GitHub Actions](#passo-adicional-publicação-automática-pelo-github-actions)
 - [Por que o cabeçalho personalizado e a variável da Lambda](#por-que-o-cabeçalho-personalizado-e-a-variável-da-lambda)
 - [O que o frontend e a Lambda registram](#o-que-o-frontend-e-a-lambda-registram)
 - [Testes de segurança feitos até aqui](#testes-de-segurança-feitos-até-aqui)
@@ -46,7 +47,7 @@ flowchart LR
 
 [Abrir o diagrama SVG detalhado em tamanho completo](docs/arquitetura-orbita.svg).
 
-**Entrega do site.** O navegador solicita `https://d1yntwcak9q8lo.cloudfront.net/`. O AWS WAF associado à distribuição inspeciona a solicitação. O CloudFront entrega o conteúdo que está em cache ou busca `index.html`, CSS, JavaScript, imagens e `config.json` no bucket privado do S3. O Origin Access Control (OAC) autoriza o CloudFront a ler os objetos sem tornar o bucket público. O certificado TLS do domínio `cloudfront.net` protege a conexão HTTPS com o visitante.
+**Entrega do site.** O navegador solicita `https://<COLE_DOMINIO_CLOUDFRONT_AQUI>/`. O AWS WAF associado à distribuição inspeciona a solicitação. O CloudFront entrega o conteúdo que está em cache ou busca `index.html`, CSS, JavaScript, imagens e `config.json` no bucket privado do S3. O Origin Access Control (OAC) autoriza o CloudFront a ler os objetos sem tornar o bucket público. O certificado TLS do domínio `cloudfront.net` protege a conexão HTTPS com o visitante.
 
 **Registro do interesse.** Ao clicar no botão, o JavaScript faz `POST /api/visits` no **mesmo domínio do site**. O comportamento `/api/*` do CloudFront escolhe a origem do API Gateway, acrescenta o cabeçalho personalizado `X-Origin-Verify` à requisição enviada à origem e não armazena a resposta em cache. O API Gateway HTTP API invoca a Lambda; ela valida o cabeçalho e o corpo e grava o item no DynamoDB. O sucesso retorna HTTP `204`, sem corpo. Abrir ou recarregar a página não registra interesse.
 
@@ -54,7 +55,7 @@ flowchart LR
 
 | Componente | Papel nesta implantação | Região/escopo |
 | --- | --- | --- |
-| S3 `tcc-edn-grupo2-orbita` | Armazenar os arquivos compilados do site em bucket privado | Ohio, `us-east-2` |
+| S3 privado | Armazenar os arquivos compilados do site em bucket privado | Ohio, `us-east-2` |
 | CloudFront | Entregar o site por HTTPS e encaminhar `/api/*` para a API | Global |
 | AWS WAF `orbita-cloudfront-waf` | Inspecionar requisições que passam pelo CloudFront | Global para CloudFront, administrado em `us-east-1` |
 | API Gateway HTTP API | Expor a rota `POST /api/visits` e invocar a Lambda | Ohio, `us-east-2` |
@@ -146,6 +147,130 @@ No **WAF → `orbita-cloudfront-waf` → Configurar registro e solicitações em
 
 As **solicitações em amostra** e as métricas já eram úteis sem o registro completo, mas mostram apenas uma parte do tráfego e não necessariamente todos os campos de uma ocorrência. Os logs completos começam a ser enviados **a partir da habilitação**; não recuperam solicitações passadas. Inspeção de logs e consultas podem gerar custo, então acompanhe o painel de faturamento e a retenção do grupo. Também considere censurar campos sensíveis se vierem a ser usados no site.
 
+## Passo adicional: publicação automática pelo GitHub Actions
+
+Depois da montagem manual, foram criados dois *workflows* de **implantação contínua (CD)**. Eles publicam novas versões do código: o primeiro compila o React/Vite, envia `dist/` ao S3 e solicita a invalidação do cache do CloudFront; o segundo empacota `backend/lambda.mjs` e atualiza o código da Lambda. Esta é uma pipeline de **publicação da aplicação**. O fluxo dos dados de interesse continua sendo navegador → CloudFront → API Gateway → Lambda → DynamoDB. Os workflows não criam nem alteram a configuração da tabela, da API, do WAF ou das origens do CloudFront.
+
+Os exemplos abaixo usam **identificadores fictícios**. Em qualquer trecho com `<COLE_..._AQUI>`, substitua pelo valor do **seu** ambiente antes de salvar no console. Não copie identificadores de outra conta. O segredo `ORIGIN_VERIFY_SECRET` e o valor de `X-Origin-Verify` não entram nos workflows nem no repositório: a implantação da Lambda atualiza o **pacote de código**, preservando as variáveis de ambiente já configuradas na função.
+
+### 10.1. Localizar os valores necessários no Console AWS e no GitHub
+
+| Marcador nos exemplos | Onde encontrar o valor a colar |
+| --- | --- |
+| `<COLE_ID_DA_CONTA_AWS_AQUI>` | Console AWS → menu da conta, no canto superior direito → **ID da conta**. É o número de 12 dígitos usado nos ARNs. |
+| `<COLE_NOME_DO_BUCKET_AQUI>` | Console AWS → **S3 → Buckets** → coluna **Nome** do bucket que contém `index.html`. Bucket tem **nome**, não um ID numérico. |
+| `<COLE_ID_DA_DISTRIBUICAO_AQUI>` | Console AWS → **CloudFront → Distribuições** → coluna **ID** da distribuição que atende o site. Copie o **ID**, não o domínio `*.cloudfront.net`. |
+| `<COLE_DOMINIO_CLOUDFRONT_AQUI>` | Na mesma lista do CloudFront, copie a coluna **Nome de domínio**. Este valor serve para abrir o site no navegador, não para `--distribution-id`. |
+| `<COLE_NOME_DA_FUNCAO_AQUI>` | Selecione **Ohio (`us-east-2`)** → **Lambda → Funções** → coluna **Nome da função**. Na página da função, a visão geral também mostra o ARN completo. |
+| `<COLE_ARN_DO_PERFIL_AQUI>` | Console AWS → **IAM → Perfis/Funções (Roles)** → perfil de implantação → campo **ARN**. Esse valor vai na variável `AWS_DEPLOY_ROLE_ARN` do GitHub. |
+| `<COLE_USUARIO_OU_ORGANIZACAO_AQUI>` e `<COLE_REPOSITORIO_AQUI>` | GitHub → página do repositório: os dois nomes aparecem antes do caminho do projeto, no formato `usuario/repositorio`. Use os nomes exatos, respeitando a grafia. |
+
+O ARN é um identificador de recurso, e não uma senha. Mesmo assim, os exemplos deste README omitem os identificadores reais da conta. Nunca publique uma chave de acesso AWS, token ou o valor do cabeçalho compartilhado.
+
+### 10.2. Criar a entidade externa OIDC na AWS
+
+1. No **Console AWS → IAM → Provedores de identidade → Adicionar provedor**, escolha **OpenID Connect**.
+2. Em **URL do provedor**, informe `https://token.actions.githubusercontent.com`. Em **Público/Audience**, informe `sts.amazonaws.com`. Esses dois valores são **padrões da integração GitHub Actions com AWS**, não IDs da sua conta GitHub.
+3. Crie o provedor. Ele representa a identidade externa que emitirá um token para cada execução autorizada. **Não** crie usuário IAM nem chave de acesso permanente para o runner.
+
+O GitHub só recebe credenciais **temporárias** da AWS quando o workflow pede um token OIDC e a política de confiança do perfil aceita o repositório e a branch indicados. A URL do provedor por si só não concede acesso aos recursos.
+
+### 10.3. Criar a política de permissões para a publicação
+
+No **IAM → Políticas → Criar política → JSON**, use uma política com apenas as ações necessárias. Substitua **cada** marcador `<COLE_..._AQUI>` pelos valores localizados em 10.1; os marcadores são didáticos e não são ARNs válidos enquanto não forem trocados. Depois escolha **Próximo**, dê um nome como `publicar-aplicacao-exemplo` e crie a política.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListarBucketDoSite",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::<COLE_NOME_DO_BUCKET_AQUI>"
+    },
+    {
+      "Sid": "PublicarArquivosDoSite",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::<COLE_NOME_DO_BUCKET_AQUI>/*"
+    },
+    {
+      "Sid": "InvalidarCacheDaDistribuicao",
+      "Effect": "Allow",
+      "Action": "cloudfront:CreateInvalidation",
+      "Resource": "arn:aws:cloudfront::<COLE_ID_DA_CONTA_AWS_AQUI>:distribution/<COLE_ID_DA_DISTRIBUICAO_AQUI>"
+    },
+    {
+      "Sid": "AtualizarCodigoDaFuncao",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:UpdateFunctionCode",
+        "lambda:GetFunctionConfiguration"
+        ]
+      "Resource": "arn:aws:lambda:us-east-2:<COLE_ID_DA_CONTA_AWS_AQUI>:function:<COLE_NOME_DA_FUNCAO_AQUI>"
+    }
+  ]
+}
+```
+
+`s3:ListBucket` permite ao `aws s3 sync` comparar os objetos existentes; `s3:PutObject` permite enviar os arquivos compilados. `cloudfront:CreateInvalidation` apenas pede que o CloudFront descarte cópias em cache; **não** muda a configuração da distribuição. `lambda:UpdateFunctionCode` atualiza o pacote da função; **não** altera seu perfil de execução, suas variáveis de ambiente ou as permissões de gravação no DynamoDB. `lambda:GetFunctionConfiguration` permite consultar o estado e as configurações da função para que o comando `aws lambda wait function-updated` confirme que a atualização terminou; essa permissão não permite modificar a função. O `sync` atual não usa `--delete`, então esta política não concede `s3:DeleteObject`. A política é anexada ao **perfil de implantação do GitHub**, não ao perfil que a Lambda usa para executar.
+
+### 10.4. Criar o perfil IAM e limitar sua relação de confiança
+
+1. No **IAM → Perfis/Funções (Roles) → Criar perfil**, selecione **Identidade Web**. Escolha o provedor `token.actions.githubusercontent.com` e o público `sts.amazonaws.com`.
+2. Em **GitHub organization**, coloque `<COLE_USUARIO_OU_ORGANIZACAO_AQUI>`. Em **GitHub repository** e **GitHub branch**, coloque o repositório escolhido e `main`. Evite `*` nesses campos: este projeto só publica após a mudança entrar em `main`.
+3. Em **Adicionar permissões**, selecione apenas a política criada em 10.3. Dê um nome como `deploy-github-exemplo`, revise e crie o perfil.
+4. Abra o perfil → **Relações de confiança → Editar política de confiança**. Confira se `aud` é `sts.amazonaws.com` e se `sub` corresponde **exatamente** ao dono, repositório e branch. A condição esperada tem este formato:
+
+```json
+{
+  "StringEquals": {
+    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+    "token.actions.githubusercontent.com:sub": "repo:<COLE_USUARIO_OU_ORGANIZACAO_AQUI>/<COLE_REPOSITORIO_AQUI>:ref:refs/heads/main"
+  }
+}
+```
+
+Esse trecho mostra **somente a condição** da política de confiança; o console gera também o principal federado e a ação `sts:AssumeRoleWithWebIdentity`. Verifique se o ARN do principal aponta para o provedor OIDC **da sua própria conta**. Não inclua barras invertidas, tabulações ou caracteres extras no valor de `sub`. Essa política responde **quem pode assumir** o perfil; a política de 10.3 responde **o que o perfil pode fazer**. O perfil de execução da Lambda é outro perfil, usado quando a função roda.
+
+### 10.5. Configurar o repositório no GitHub
+
+1. No repositório, abra **Settings → Secrets and variables → Actions → Variables → New repository variable**.
+2. Crie a variável `AWS_DEPLOY_ROLE_ARN` e cole em **Value** o ARN do perfil localizado em 10.1. O workflow usa `${{ vars.AWS_DEPLOY_ROLE_ARN }}`. Essa variável é uma configuração do deploy, **não** o segredo entre CloudFront e Lambda.
+3. Confira que **Actions** está habilitado no repositório. O fluxo adotado é trabalhar em uma branch de tarefa, abrir um *pull request* para `main`, obter a aprovação exigida pelas regras do repositório e então fazer o *merge*. O *merge* gera um `push` em `main`, que pode iniciar os workflows.
+
+O provedor OIDC é criado **uma vez por conta AWS**. Já a política de confiança deve continuar restrita ao repositório e à branch de implantação. Se o ARN da variável estiver vazio ou apontar para outro perfil, a etapa de obter credenciais falhará. Se aparecer `AccessDenied` para um serviço, confira as ações e os ARNs da política anexada ao **perfil de implantação**.
+
+### 10.6. Entender os dois arquivos YAML do GitHub Actions
+
+Os arquivos deste projeto são [`.github/workflows/deploy-frontend.yml`](.github/workflows/deploy-frontend.yml) e [`.github/workflows/deploy-lambda.yml`](.github/workflows/deploy-lambda.yml). O diretório obrigatório é **`.github/workflows/`**, no plural. O GitHub procura nessa pasta os arquivos `.yml` ou `.yaml` que definem workflows; salvar o mesmo conteúdo em `.github/workflow/` ou em outra pasta não o registra como workflow. O arquivo define **quando** executar, **em qual runner** e **quais passos** rodar. Criar o arquivo já deixa o workflow disponível no GitHub; ele só executa quando ocorre um evento configurado ou quando alguém o inicia manualmente.
+
+| Parte do YAML | Significado neste projeto |
+| --- | --- |
+| `name` | Nome exibido na aba **Actions**. |
+| `on.push.branches: [main]` | Executa quando um novo commit entra na branch remota `main`, inclusive após um merge de PR. Um push na branch de tarefa não publica. |
+| `on.push.paths` | Filtro de arquivos para o evento `push`: o frontend observa `src/**`, `public/**`, `index.html`, manifestos npm e o próprio YAML; a Lambda observa `backend/**` e seu YAML. Um commit só no README não inicia nenhum dos dois. |
+| `workflow_dispatch` | Permite iniciar manualmente pela aba **Actions**, mesmo sem uma mudança nos caminhos filtrados. Confirme a branch selecionada antes de clicar em **Run workflow**. |
+| `permissions: contents: read` | Autoriza o checkout do código do repositório. |
+| `permissions: id-token: write` | Permite solicitar ao GitHub um token OIDC para assumir o perfil IAM. Não concede por si só acesso ao S3 ou à Lambda. |
+| `concurrency` | Agrupa execuções do mesmo workflow para evitar publicações simultâneas. `cancel-in-progress: false` mantém a execução em andamento. Cada YAML usa um grupo diferente. |
+| `jobs.publicar` e `runs-on: ubuntu-latest` | Definem o trabalho e um **runner** Linux temporário fornecido pelo GitHub. Os comandos `run` executam nesse runner, não no seu PC nem em uma EC2 sua. |
+| `steps`, `name`, `uses`, `with` | Cada *step* tem um nome; `uses` chama uma action reutilizável e `with` passa suas opções. `actions/checkout` baixa o código e `actions/setup-node` instala a versão do Node e prepara o cache npm. |
+| `run` e `run: |` | `run` executa comandos no runner. O `|` do YAML preserva **várias linhas** como um único bloco de comandos; não é um operador de permissão nem uma chamada à API. |
+| `aws-actions/configure-aws-credentials`, `role-to-assume`, `aws-region` | A action troca o token OIDC por credenciais temporárias do perfil indicado em `AWS_DEPLOY_ROLE_ARN`. Os dois deploys usam `us-east-2` para S3 e Lambda; o comando CloudFront alcança o serviço global. |
+| `${{ github.run_id }}` | Identificador de **cada execução** usado no nome da sessão IAM para facilitar a identificação do deploy. Não é ID do bucket, da distribuição ou da conta. |
+
+**Workflow do frontend.** `npm ci` instala exatamente as versões do `package-lock.json`; `npm run build` faz o Vite gerar `dist/`. `aws s3 sync dist/ s3://<COLE_NOME_DO_BUCKET_AQUI>/` envia os arquivos para a **raiz** do bucket. Em seguida, `aws cloudfront create-invalidation --distribution-id <COLE_ID_DA_DISTRIBUICAO_AQUI> --paths '/*'` solicita ao CloudFront que busque novamente os caminhos ao receber novos pedidos. Esses comandos são **modelos explicativos** com marcadores: no YAML executável, os valores devem apontar para os recursos reais do seu ambiente. A invalidação pode levar algum tempo; o workflow terminar não significa que todas as bordas já receberam a mudança.
+
+**Workflow da Lambda.** `node --check backend/lambda.mjs` verifica a **sintaxe**, não o comportamento da função. `npm ci --prefix backend --omit=dev` instala no diretório `backend` as dependências de produção travadas no `backend/package-lock.json`. O bloco `run: |` copia `lambda.mjs` para `index.mjs`, entra em `backend/` e cria `lambda-deploy.zip` com `index.mjs`, `package.json` e `node_modules`. Isso mantém o handler configurado como `index.handler`. `aws lambda update-function-code --function-name <COLE_NOME_DA_FUNCAO_AQUI> --zip-file fileb://lambda-deploy.zip` envia o pacote; `aws lambda wait function-updated` aguarda a atualização da função. Esse fluxo não altera automaticamente as variáveis `VISITS_TABLE` e `ORIGIN_VERIFY_SECRET`.
+
+As duas publicações são **independentes**. Se um commit em `main` mudar frontend e backend, ambos os workflows podem executar; se mudar apenas `backend/**`, só a Lambda é publicada. Os filtros `paths` selecionam workflows inteiros: não fazem uma comparação extra de conteúdo dentro de cada step. Como o deploy usa o perfil OIDC, não é preciso colocar credenciais AWS permanentes nos *Secrets* do GitHub. Os identificadores de recurso que aparecem no YAML são parâmetros de destino, não mecanismos de autenticação.
+
+### 10.7. Confirmar cada publicação
+
+No GitHub, abra **Actions → workflow → execução → job publicar** e confira cada step. Para o frontend, confirme no **Console AWS → S3 → bucket → Objetos** a data dos arquivos publicados e, em **CloudFront → distribuição → Invalidations**, a solicitação criada. Para o backend, selecione **Ohio → Lambda → função → Código** e confira a última modificação; depois faça um registro de interesse controlado e confira o `204` e o item no DynamoDB. Se o workflow falhar, abra o step vermelho: falha de `sts:AssumeRoleWithWebIdentity` aponta para perfil, variável ou confiança OIDC; `AccessDenied` em `UpdateFunctionCode`, S3 ou CloudFront aponta para a política de permissões. Um check verde confirma a execução dos comandos, mas a verificação funcional ainda depende do teste pelo site.
+
 ## Por que o cabeçalho personalizado e a variável da Lambda
 
 O endereço público da HTTP API pode ser chamado sem passar pelo CloudFront. Como o WAF está associado somente à distribuição, uma chamada direta também não passa por suas regras. Para que uma chamada direta **sem o valor esperado** não grave um item no DynamoDB, o CloudFront acrescenta o cabeçalho `X-Origin-Verify` **na comunicação com a origem API Gateway**. O navegador não recebe nem precisa conhecer esse valor. O API Gateway encaminha a requisição à Lambda, que compara o cabeçalho recebido com `ORIGIN_VERIFY_SECRET` e responde `403` antes da gravação se ele estiver ausente ou incorreto. A variável de ambiente mantém o valor fora do código publicado no S3 e permite alterá-lo sem modificar o frontend.
@@ -183,7 +308,7 @@ npm run build
 npm run preview
 ```
 
-`npm run dev` serve para desenvolvimento local. `npm run build` gera os arquivos estáticos em `dist/`; `npm run preview` permite inspecionar localmente essa compilação. Para publicar uma nova versão, carregue novamente **o conteúdo** de `dist/` na raiz do bucket S3. Se arquivos antigos com nomes diferentes permanecerem no bucket, eles não fazem parte do novo `index.html`, mas podem continuar ocupando espaço. Quando for preciso atualizar objetos que ainda podem estar no cache, crie uma **invalidação** no CloudFront para os caminhos afetados, como `/`, `/index.html` ou `/config.json`. Uma invalidação nova não exige apagar as anteriores; elas são registros de operações já feitas.
+`npm run dev` serve para desenvolvimento local. `npm run build` gera os arquivos estáticos em `dist/`; `npm run preview` permite inspecionar localmente essa compilação. Na publicação manual, carregue **o conteúdo** de `dist/` na raiz do bucket S3. Na publicação automática, o workflow do frontend faz o build, sincroniza `dist/` e cria uma **invalidação** `/*` no CloudFront após o merge em `main`. O workflow separado da Lambda publica o pacote quando `backend/**` muda. Arquivos antigos com nomes diferentes podem permanecer no bucket, pois o comando atual não usa `--delete`. Uma invalidação nova não exige apagar as anteriores; elas são registros de operações já feitas.
 
 No navegador, abra **DevTools → Network**: antes do clique, não deve haver `POST /api/visits`; após o clique, confira o `204` e o item no DynamoDB. Recarregue a página para verificar que o botão permanece confirmado no mesmo navegador. Confira também o CloudFront/WAF: uma solicitação bloqueada pela regra de XSS deve aparecer como **Block**, enquanto regras em Count apenas contabilizam. Caso a API falhe, o site estático continua abrindo e o botão permite nova tentativa.
 
@@ -198,6 +323,8 @@ public/config.json        configuração pública do endpoint relativo
 backend/lambda.mjs        código de referência da função Lambda
 backend/package.json      dependências do backend
 docs/arquitetura-orbita.svg  diagrama da implantação
+.github/workflows/deploy-frontend.yml  build do Vite, S3 e invalidação do CloudFront
+.github/workflows/deploy-lambda.yml    pacote e atualização do código da Lambda
 ```
 
 `dist/` e `node_modules/` são gerados localmente e ignorados pelo Git. O valor do cabeçalho privado não deve ser incluído no repositório, no pacote do frontend ou em capturas públicas do Console AWS.
@@ -212,3 +339,8 @@ docs/arquitetura-orbita.svg  diagrama da implantação
 - [AWS WAF: criar uma Web ACL para CloudFront](https://docs.aws.amazon.com/waf/latest/developerguide/web-acl-creating.html)
 - [AWS WAF: enviar logs ao CloudWatch Logs](https://docs.aws.amazon.com/waf/latest/developerguide/logging-cw-logs.html)
 - [AWS WAF: ações Count e Block](https://docs.aws.amazon.com/waf/latest/APIReference/API_RuleAction.html)
+- [GitHub Actions: sintaxe e localização dos workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)
+- [GitHub Actions: OIDC com AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)
+- [GitHub Actions: variáveis de configuração](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-variables)
+- [AWS IAM: criar perfil para provedor OIDC do GitHub](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-idp_oidc.html)
+- [AWS IAM: criar política no editor JSON](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_create-console.html)

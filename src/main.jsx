@@ -4,6 +4,7 @@ import { interestIsConfirmed, registerInterest } from "./analytics";
 import "./style.css";
 
 const Universe = lazy(() => import("./Universe"));
+const users = ["gabriel", "daniel", "arthur"];
 
 const missions = [
   {
@@ -531,6 +532,11 @@ function App() {
         <span>{paused ? "Retomar movimento" : "Pausar movimento"}</span>
       </button>
       <PrivacyDialog dialogRef={privacyDialog} />
+        <ul>
+          {
+            users.map(element => (<li>{element}</li>))
+          }
+        </ul>
     </div>
   );
 }

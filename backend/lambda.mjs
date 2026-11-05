@@ -3,10 +3,11 @@ import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 const dynamodb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const tableName = process.env.VISITS_TABLE;
+const defaultTimeZone = "America/Sao_Paulo";
 
 function formatVisitTime(date, country, timeZone) {
   const locale = country === "unknown"
-    ? "en-GB"
+    ? "pt-BR"
     : new Intl.Locale(`und-${country}`).maximize().toString();
 
   return new Intl.DateTimeFormat(locale, {
@@ -17,13 +18,13 @@ function formatVisitTime(date, country, timeZone) {
 }
 
 function getTimeZone(value) {
-  if (typeof value !== "string" || value.length > 64) return "UTC";
+  if (typeof value !== "string" || value.length > 64) return defaultTimeZone;
 
   try {
-    new Intl.DateTimeFormat("en", { timeZone: value });
+    new Intl.DateTimeFormat("pt-BR", { timeZone: value });
     return value;
   } catch {
-    return "UTC";
+    return defaultTimeZone;
   }
 }
 

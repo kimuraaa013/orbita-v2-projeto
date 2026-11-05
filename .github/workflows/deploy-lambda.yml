@@ -1,0 +1,60 @@
+name: Publicar Lambda
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-lambda.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publicar-lambda
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v7
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Verificar sintaxe
+        run: node --check backend/lambda.mjs
+
+      - name: Instalar dependências da Lambda
+        run: npm ci --prefix backend --omit=dev
+
+      - name: Criar pacote da Lambda
+        run: |
+          cp backend/lambda.mjs backend/index.mjs
+          cd backend
+          zip -q -r ../lambda-deploy.zip index.mjs package.json node_modules
+
+      - name: Obter credenciais temporárias da AWS
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: orbita-lambda-${{ github.run_id }}
+          aws-region: us-east-2
+
+      - name: Publicar código
+        run: |
+          aws lambda update-function-code \
+            --function-name orbita-registrar-visita \
+            --zip-file fileb://lambda-deploy.zip
+
+      - name: Aguardar atualização
+        run: aws lambda wait function-updated --function-name orbita-registrar-visita

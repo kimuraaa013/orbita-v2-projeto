@@ -112,7 +112,11 @@ export async function handler(event) {
       return { statusCode: 204 };
     }
 
-    console.error("Não foi possível registrar a visita.");
+    console.error("Não foi possível registrar a visita.", {
+      name: error.name,
+      message: error.message,
+      cancellationReasons: error.CancellationReasons?.map((reason) => reason.Code),
+    });
     return { statusCode: 503 };
   }
 }

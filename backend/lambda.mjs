@@ -1,9 +1,10 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 
 const dynamodb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const tableName = process.env.VISITS_TABLE;
 const defaultTimeZone = "America/Sao_Paulo";
+const totalInterestsId = "METRIC#INTERESTS";
 
 function formatVisitTime(date, country, timeZone) {
   const locale = country === "unknown"
@@ -73,25 +74,41 @@ export async function handler(event) {
   const expiresAt = Math.floor(now.getTime() / 1000) + 30 * 24 * 60 * 60;
 
   try {
-    await dynamodb.send(new PutCommand({
-      TableName: tableName,
-      Item: {
-        eventId: visit.eventId,
-        visitedAt: now.toISOString(),
-        visitedAtLocal: formatVisitTime(now, country, timeZone),
-        timeZone,
-        source,
-        country,
-        region,
-        expiresAt,
-      },
-      ConditionExpression: "attribute_not_exists(eventId)",
+    await dynamodb.send(new TransactWriteCommand({
+      TransactItems: [
+        {
+          Put: {
+            TableName: tableName,
+            Item: {
+              eventId: visit.eventId,
+              visitedAt: now.toISOString(),
+              visitedAtLocal: formatVisitTime(now, country, timeZone),
+              timeZone,
+              source,
+              country,
+              region,
+              expiresAt,
+            },
+            ConditionExpression: "attribute_not_exists(eventId)",
+          },
+        },
+        {
+          Update: {
+            TableName: tableName,
+            Key: { eventId: totalInterestsId },
+            UpdateExpression: "SET #total = if_not_exists(#total, :zero) + :one",
+            ExpressionAttributeNames: { "#total": "total" },
+            ExpressionAttributeValues: { ":zero": 0, ":one": 1 },
+          },
+        },
+      ],
     }));
 
     return { statusCode: 204 };
   } catch (error) {
-    // Se o mesmo evento chegar duas vezes, não gravamos uma segunda visita.
-    if (error.name === "ConditionalCheckFailedException") {
+    // O primeiro item da transação é a visita. Se ele já existe, o total não muda.
+    if (error.name === "TransactionCanceledException" &&
+        error.CancellationReasons?.[0]?.Code === "ConditionalCheckFailed") {
       return { statusCode: 204 };
     }
 

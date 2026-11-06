@@ -37,9 +37,9 @@ export async function handler(event) {
   }
 
   const secret = process.env.ORIGIN_VERIFY_SECRET;
-  /*if (!/^[a-f0-9]{64}$/i.test(secret ?? "") || headers["x-origin-verify"] !== secret) {
+  if (!/^[a-f0-9]{64}$/i.test(secret ?? "") || headers["x-origin-verify"] !== secret) {
     return { statusCode: 403 };
-  }*/
+  }
 
   let visit;
 

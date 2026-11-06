@@ -12,6 +12,7 @@ Este README documenta a implantação inicial feita **manualmente pelo Console d
 - [Passo adicional: publicação automática pelo GitHub Actions](#passo-adicional-publicação-automática-pelo-github-actions)
 - [Por que o cabeçalho personalizado e a variável da Lambda](#por-que-o-cabeçalho-personalizado-e-a-variável-da-lambda)
 - [O que o frontend e a Lambda registram](#o-que-o-frontend-e-a-lambda-registram)
+- [Consultar o total de interesses](#consultar-o-total-de-interesses)
 - [Testes de segurança feitos até aqui](#testes-de-segurança-feitos-até-aqui)
 - [Executar, atualizar e verificar](#executar-atualizar-e-verificar)
 - [Arquivos principais](#arquivos-principais)
@@ -28,7 +29,7 @@ flowchart LR
     cloudfront -->|"/api/* · POST<br/>X-Origin-Verify"| api["API Gateway HTTP API<br/>POST /api/visits · us-east-2"]
     api --> lambda["Lambda<br/>Valida requisição · us-east-2"]
     lambda --> segredo{"Segredo confere?"}
-    segredo -->|"Sim"| dynamo["DynamoDB<br/>Grava interesse · us-east-2"]
+    segredo -->|"Sim"| dynamo["DynamoDB<br/>Grava interesse e total · us-east-2"]
     segredo -->|"Não"| negado["HTTP 403<br/>Não grava"]
     waf -.->|"Logs do WAF"| logsWaf["CloudWatch Logs<br/>us-east-1"]
     lambda -.->|"Logs da função"| logsLambda["CloudWatch Logs<br/>us-east-2"]
@@ -49,7 +50,7 @@ flowchart LR
 
 **Entrega do site.** O navegador solicita `https://<COLE_DOMINIO_CLOUDFRONT_AQUI>/`. O AWS WAF associado à distribuição inspeciona a solicitação. O CloudFront entrega o conteúdo que está em cache ou busca `index.html`, CSS, JavaScript, imagens e `config.json` no bucket privado do S3. O Origin Access Control (OAC) autoriza o CloudFront a ler os objetos sem tornar o bucket público. O certificado TLS do domínio `cloudfront.net` protege a conexão HTTPS com o visitante.
 
-**Registro do interesse.** Ao clicar no botão, o JavaScript faz `POST /api/visits` no **mesmo domínio do site**. O comportamento `/api/*` do CloudFront escolhe a origem do API Gateway, acrescenta o cabeçalho personalizado `X-Origin-Verify` à requisição enviada à origem e não armazena a resposta em cache. O API Gateway HTTP API invoca a Lambda; ela valida o cabeçalho e o corpo e grava o item no DynamoDB. O sucesso retorna HTTP `204`, sem corpo. Abrir ou recarregar a página não registra interesse.
+**Registro do interesse.** Ao clicar no botão, o JavaScript faz `POST /api/visits` no **mesmo domínio do site**. O comportamento `/api/*` do CloudFront escolhe a origem do API Gateway, acrescenta o cabeçalho personalizado `X-Origin-Verify` à requisição enviada à origem e não armazena a resposta em cache. O API Gateway HTTP API invoca a Lambda; ela valida o cabeçalho e o corpo. Uma transação no DynamoDB grava o interesse e aumenta um contador na mesma tabela. O sucesso retorna HTTP `204`, sem corpo. Abrir ou recarregar a página não registra interesse.
 
 **Observabilidade.** A ACL do WAF envia seus registros de tráfego para um grupo do CloudWatch Logs. A Lambda também pode escrever seus logs de execução no CloudWatch Logs por meio das permissões básicas do seu perfil IAM. São fluxos de log diferentes. As métricas e amostras do WAF ajudam a ver regras acionadas; os logs completos permitem examinar uma solicitação com mais detalhe a partir do momento em que o registro foi habilitado.
 
@@ -60,7 +61,7 @@ flowchart LR
 | AWS WAF `orbita-cloudfront-waf` | Inspecionar requisições que passam pelo CloudFront | Global para CloudFront, administrado em `us-east-1` |
 | API Gateway HTTP API | Expor a rota `POST /api/visits` e invocar a Lambda | Ohio, `us-east-2` |
 | Lambda `orbita-registrar-visita` | Validar a requisição e registrar o interesse | Ohio, `us-east-2` |
-| DynamoDB `orbita-visits` | Guardar um item por `eventId` | Ohio, `us-east-2` |
+| DynamoDB `orbita-visits` | Guardar um item por `eventId` e um item com o total de interesses | Ohio, `us-east-2` |
 | CloudWatch Logs | Receber os logs da ACL do WAF e, separadamente, da Lambda | Grupo do WAF em `us-east-1`; grupo da Lambda em `us-east-2` |
 
 O domínio do CloudFront é fornecido pela AWS, por isso esta implantação não depende de Route 53 nem de domínio próprio. O **S3 usa a origem normal do bucket com OAC**: o endpoint de hospedagem de site estático do S3, mesmo que tenha sido ativado durante a configuração inicial, não é a origem usada para servir esta distribuição privada.
@@ -115,13 +116,15 @@ Uma *origin* é o destino de onde o CloudFront busca conteúdo; um *behavior* é
 
 ### 4. Criar a tabela DynamoDB
 
-No **Console AWS → DynamoDB → Criar tabela**, foi criada `orbita-visits` com chave de partição `eventId` do tipo **String**, sem chave de classificação, e capacidade **sob demanda**. A Lambda calcula `expiresAt` como um horário Unix aproximadamente 30 dias após o registro. **Esse atributo sozinho não apaga itens**: se a exclusão automática for desejada, é necessário habilitar o TTL da tabela usando exatamente o atributo `expiresAt`. A remoção pelo TTL é assíncrona.
+No **Console AWS → DynamoDB → Criar tabela**, foi criada `orbita-visits` com chave de partição `eventId` do tipo **String**, sem chave de classificação, e capacidade **sob demanda**. Além dos itens de interesse com UUID, a Lambda mantém nessa mesma tabela o item `eventId = METRIC#INTERESTS`, cujo atributo numérico `total` guarda a contagem. Não é necessário criar outra tabela nem criar o item manualmente: a primeira transação bem-sucedida o cria.
+
+A Lambda calcula `expiresAt` como um horário Unix aproximadamente 30 dias após cada registro de interesse. **Esse atributo sozinho não apaga itens**: se a exclusão automática for desejada, é necessário habilitar o TTL da tabela usando exatamente o atributo `expiresAt`. A remoção pelo TTL é assíncrona. O item do contador não tem `expiresAt` e, portanto, não expira com os registros. O total é acumulado desde que esta versão do código começou a registrar interesses; registros anteriores não são incluídos automaticamente. Se o TTL estiver ativado, o total continuará acumulado mesmo depois de os itens individuais expirarem.
 
 ### 5. Criar a função Lambda e sua permissão
 
 No **Console AWS → Lambda → Criar função**, foi criada `orbita-registrar-visita` com runtime Node.js. O código de referência está em [`backend/lambda.mjs`](backend/lambda.mjs). Ao colá-lo no editor `index.mjs` da função no console, o handler permanece `index.handler`. Os runtimes Node.js atuais da Lambda incluem uma versão do AWS SDK para JavaScript v3, utilizada pelo editor do console. Para controlar a versão das dependências em um pacote próprio, a pasta `backend/` contém o manifesto para instalá-las e incluí-las no envio.
 
-No perfil de execução IAM da Lambda, além das permissões básicas para logs, foi adicionada uma política de menor privilégio que permite `dynamodb:PutItem` **somente** na tabela `orbita-visits`. Em **Configuração → Variáveis de ambiente**, foram definidos `VISITS_TABLE` com o nome da tabela e `ORIGIN_VERIFY_SECRET` com o valor privado acordado com a origem do CloudFront. O valor do segredo **não** fica no React, no `config.json`, no README ou no Git. Depois de alterar o código ou as variáveis, é preciso implantar a função no console.
+No perfil de execução IAM da Lambda, além das permissões básicas para logs, a política de menor privilégio deve permitir `dynamodb:PutItem` e `dynamodb:UpdateItem` **somente** na tabela `orbita-visits`. A transação usa `PutItem` para o interesse e `UpdateItem` para o contador. Antes de publicar esta versão, abra **Lambda → orbita-registrar-visita → Configuração → Permissões → Perfil de execução**; no IAM, edite a política de acesso ao DynamoDB desse perfil e acrescente `dynamodb:UpdateItem` à lista de ações, mantendo o ARN da tabela como recurso. Essa é a política do **perfil de execução da Lambda**, não a política do perfil de implantação do GitHub. Em **Configuração → Variáveis de ambiente**, foram definidos `VISITS_TABLE` com o nome da tabela e `ORIGIN_VERIFY_SECRET` com o valor privado acordado com a origem do CloudFront. O valor do segredo **não** fica no React, no `config.json`, no README ou no Git. Alterações feitas no editor do Console exigem clicar em **Deploy**; alterações em `backend/` enviadas por pull request são publicadas pelo GitHub Actions após o merge em `main`.
 
 ### 6. Criar a HTTP API no API Gateway
 
@@ -281,9 +284,15 @@ O endereço público da HTTP API pode ser chamado sem passar pelo CloudFront. Co
 
 O arquivo [`src/analytics.js`](src/analytics.js) lê [`public/config.json`](public/config.json) e envia o POST **somente no clique**. O corpo contém um `eventId` UUID v4 e `source`. O `source` usa `utm_source` da URL quando válido; caso contrário, pode usar o domínio do referenciador ou `direct`. Esses campos enviados pelo navegador são entradas não confiáveis e não servem para autorizar a requisição.
 
-A Lambda grava `eventId`, `source`, `country`, `region`, `visitedAt` em UTC, `visitedAtLocal`, `timeZone` e `expiresAt`. País, região e fuso dependem dos cabeçalhos recebidos da origem CloudFront; podem ficar `unknown` ou `UTC`. **O código atual não grava `eventType`, endereço IP ou dados de cadastro.** Outros serviços da AWS podem manter logs técnicos próprios, inclusive endereços IP.
+A Lambda grava, para cada interesse, `eventId`, `source`, `country`, `region`, `visitedAt` em UTC, `visitedAtLocal`, `timeZone` e `expiresAt`. Ela também atualiza o item `METRIC#INTERESTS`, que contém `total`. País, região e fuso dependem dos cabeçalhos recebidos da origem CloudFront; podem ficar `unknown` ou usar o fuso padrão. **O código atual não grava `eventType`, endereço IP ou dados de cadastro.** Outros serviços da AWS podem manter logs técnicos próprios, inclusive endereços IP.
 
-O navegador guarda `orbita-interest-event-id` e `orbita-interest-confirmed` em `localStorage` para manter o botão como **Registrado** após recarregar e reduzir reenvios. Se uma tentativa falhar, o mesmo `eventId` pode ser reutilizado; a escrita condicional da Lambda evita uma segunda linha para esse ID. Isso não identifica uma pessoa entre navegadores ou após limpar os dados locais.
+O navegador guarda `orbita-interest-event-id` e `orbita-interest-confirmed` em `localStorage` para manter o botão como **Registrado** após recarregar e reduzir reenvios. Se uma tentativa falhar, o mesmo `eventId` pode ser reutilizado. A transação só grava um evento com ID novo: se o ID já existir, a gravação e o aumento do total são cancelados juntos. Isso não identifica uma pessoa entre navegadores ou após limpar os dados locais.
+
+## Consultar o total de interesses
+
+No **Console AWS → DynamoDB → Tabelas → orbita-visits → Explorar itens da tabela**, escolha a operação **Consultar / Query** e informe a chave de partição `eventId` igual a `METRIC#INTERESTS`. O item retornado deve mostrar `total` como **Number**. Consultar essa chave lê apenas o contador; não é necessário varrer todos os interesses com **Scan**. Depois da primeira gravação feita por esta versão da Lambda, o item aparece junto dos outros registros na visualização da tabela. A aplicação não expõe esse total em uma rota pública.
+
+Esse número conta **eventos com `eventId` diferente**, não pessoas únicas. Limpar o armazenamento local, trocar de navegador ou enviar um novo UUID pode produzir outro interesse. O banco não aplica uma identidade de usuário. A transação de duas escritas custa mais do que a gravação anterior de um item só e, sob muitas gravações simultâneas, o item único do contador pode sofrer contenção; para o volume do TCC, ele simplifica a consulta.
 
 ## Testes de segurança feitos até aqui
 
@@ -310,7 +319,7 @@ npm run preview
 
 `npm run dev` serve para desenvolvimento local. `npm run build` gera os arquivos estáticos em `dist/`; `npm run preview` permite inspecionar localmente essa compilação. Na publicação manual, carregue **o conteúdo** de `dist/` na raiz do bucket S3. Na publicação automática, o workflow do frontend faz o build, sincroniza `dist/` e cria uma **invalidação** `/*` no CloudFront após o merge em `main`. O workflow separado da Lambda publica o pacote quando `backend/**` muda. Arquivos antigos com nomes diferentes podem permanecer no bucket, pois o comando atual não usa `--delete`. Uma invalidação nova não exige apagar as anteriores; elas são registros de operações já feitas.
 
-No navegador, abra **DevTools → Network**: antes do clique, não deve haver `POST /api/visits`; após o clique, confira o `204` e o item no DynamoDB. Recarregue a página para verificar que o botão permanece confirmado no mesmo navegador. Confira também o CloudFront/WAF: uma solicitação bloqueada pela regra de XSS deve aparecer como **Block**, enquanto regras em Count apenas contabilizam. Caso a API falhe, o site estático continua abrindo e o botão permite nova tentativa.
+No navegador, abra **DevTools → Network**: antes do clique, não deve haver `POST /api/visits`; após o clique, confira o `204`, o item de interesse e o aumento de `total` no DynamoDB. Reenvie o mesmo `eventId` em um teste controlado: a resposta continua `204`, mas o total não aumenta. Recarregue a página para verificar que o botão permanece confirmado no mesmo navegador. Confira também o CloudFront/WAF: uma solicitação bloqueada pela regra de XSS deve aparecer como **Block**, enquanto regras em Count apenas contabilizam. Caso a API falhe, o site estático continua abrindo e o botão permite nova tentativa.
 
 ## Arquivos principais
 
@@ -336,6 +345,8 @@ docs/arquitetura-orbita.svg  diagrama da implantação
 - [CloudFront: adicionar cabeçalhos personalizados às origens](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/add-origin-custom-headers.html)
 - [CloudFront: política gerenciada AllViewerExceptHostHeader](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-origin-request-policies.html)
 - [Lambda Node.js: versão do AWS SDK incluída no runtime](https://docs.aws.amazon.com/lambda/latest/dg/lambda-nodejs.html)
+- [DynamoDB: transações de escrita atômicas](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html)
+- [DynamoDB: permissões IAM para transações](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html)
 - [AWS WAF: criar uma Web ACL para CloudFront](https://docs.aws.amazon.com/waf/latest/developerguide/web-acl-creating.html)
 - [AWS WAF: enviar logs ao CloudWatch Logs](https://docs.aws.amazon.com/waf/latest/developerguide/logging-cw-logs.html)
 - [AWS WAF: ações Count e Block](https://docs.aws.amazon.com/waf/latest/APIReference/API_RuleAction.html)
